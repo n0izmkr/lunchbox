@@ -1,0 +1,352 @@
+' {$STAMP BS2}
+' {$PBASIC 2.5}
+
+'Theremin Midi Controller- utilizing 2 Ping Ultrasonic sensors and Basic Stamp. 
+'Creative property of Nicole Carroll, Eli Chalmer, and Dave Porcello. 2009.
+'Programming, hardware and interface design: Nicole Carroll. Drill press operator: Dave 'Porcello. Made for Eli Chalmer.  
+
+'--------------define alias-------------------
+MidiOut 	PIN 	13 			'midi serial output
+MidiBaud 	CON 	$8000 + 12 		'31.25 kBaud -- open
+
+
+mmconstant 	CON 	22600 			' multiplier to convert time to millimeter
+mmdistance 	VAR 	WORD			' Ping time: distance conversion, in millimeters
+time		VAR 	WORD			' time in us (microseconds) Ping sends/receives signal
+midivalue 	VAR	BYTE			' absolute midi value to send (0 - 127) from Ping1
+
+mmdistance2 	VAR 	WORD			' Ping time: distance conversion, in millimeters
+time2 		VAR 	WORD			' time in us (microseconds) Ping sends/receives signal
+midivalue2 	VAR 	BYTE			' absolute midi value to send from Ping2
+
+velocity 	VAR 	BYTE			' midi data "volume"
+
+
+scalefactorA 	CON 	12382			' constant to scale distance to midi value for midi range (0-96)
+scalefactorB 	CON	4723	 		' constant to scale distance to midi value for midi range (24-60)
+scalefactorC 	CON 	16339 			' constant to scale distance to midid value for midi range (0 - 127)
+
+midichannel	CON	$B3 			' midi continuous control channel message start
+
+
+
+
+
+lastnote	VAR	BYTE			' last midi value for note on messages
+lastvalue	VAR	BYTE			' last midi value for CC messages
+
+
+timeA		VAR	BIT			' value received from function select knob- position A
+timeB		VAR	BIT 			' value received from function select knob- position B
+timeC		VAR	BIT 			' value received from function select knob- position C
+
+midiLSB		VAR	BYTE 			' Least Significant Byte- Pitch Bend midi data
+
+adcbits		VAR	BYTE
+Ping2On		VAR	BIT
+
+' -----[ Initialization ]--------------------------------------------------
+CS PIN 7
+CLK PIN 9
+DataOutput PIN 10
+
+'----------------program----------------------------
+Main:
+DO
+
+' Read Ping1 Function knob---
+	HIGH 1	'send signal to pin1- function A
+	PAUSE 6
+	RCTIME 1, 1, timeA
+	IF timeA = 1 THEN 
+		GOSUB Ping1_A
+	ELSE
+		HIGH 3	'send signal to pin2- function B
+		PAUSE 6
+		RCTIME 3, 1, timeB
+		IF timeB = 1 THEN 
+			GOSUB Ping1_B
+		ELSE
+			GOSUB Ping1_C	'select function C
+		ENDIF
+	ENDIF
+
+LOOP
+
+
+'---Ping function subroutine A-------
+Ping1_A:
+
+IF IN0 = 1 THEN Ping2selectA
+IF IN0 = 0 THEN Ping1_a1
+
+
+Ping2selectA:
+
+IF IN12 = 0 THEN Ping2CC69
+IF IN12 = 1 THEN Ping2PitchBend
+
+Ping2CC69:
+
+PULSOUT 14, 5		'send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' recieve pulse duration on Pin 14
+IF time2 < 00053 OR time2 > 02688 THEN Ping1_a1 ' constrain output to (0-127)
+
+GOSUB Ping2_conversion		
+	
+'	mmdistance2 = mmconstant ** time2 ' convert time data to distance in millimeters
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 
+'	midivalue2 = mmdistance2
+
+SEROUT MidiOut, MidiBaud, [midichannel, 69, midivalue2]
+
+
+GOSUB Ping1_a1 
+
+Ping2PitchBend:
+
+PULSOUT 14, 5		' send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' receive pulse duration on Pin 14
+IF time2 < 00077 OR time2 > 01594 THEN Ping1_a1 'constrain output to (0-127)		
+
+GOSUB Ping2_conversion
+'	mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 
+'	midivalue2 = mmdistance2
+	
+IF midivalue2 < 127 THEN midiLSB = 0
+IF midivalue2 = 127 THEN midiLSB = 127
+	
+
+SEROUT MidiOut, MidiBaud, [227, midiLSB, midivalue2]
+
+GOSUB Ping1_a1
+
+Ping1_a1:
+PULSOUT 15, 5	'send pulse out Pin 15, for 10 us
+PULSIN 15, 1, time	' recieve pulse duration on Pin 15
+IF time < 00087 OR time > 01577 THEN Ping1_A 'constrain output ot (0-96)
+		
+	mmdistance = mmconstant ** time 'convert time data to distance in millimeters
+	mmdistance = mmdistance - 14 ** scalefactorA - 3
+	midivalue = mmdistance
+
+GOSUB Get_Velocity 
+
+GOSUB Scan_Change	
+'IF lastnote <> midivalue THEN 
+'	SEROUT MidiOut, MidiBaud, [$93, midivalue, velocity]
+'ENDIF
+'IF lastnote <> midivalue THEN
+'	SEROUT MidiOut, MidiBaud, [$83, lastnote, 0]
+'ENDIF
+'lastnote = midivalue
+
+
+HIGH 1
+PAUSE 6
+RCTIME 1, 1, timeA
+IF timeA = 1 THEN 
+	GOSUB Ping1_A
+ELSE
+	HIGH 3
+	PAUSE 6
+	RCTIME 3, 1, timeB
+	IF timeB = 1 THEN 
+		GOSUB Ping1_B
+	ELSE
+		GOSUB Ping1_C
+	ENDIF
+ENDIF
+
+'---Ping function subroutine B----------------
+Ping1_B:
+
+IF IN0 = 1 THEN Ping2selectB
+IF IN0 = 0 THEN Ping1_b1
+
+Ping2selectB:
+IF IN12 = 0 THEN Ping2CC69_b
+IF IN12 = 1 THEN Ping2PitchBend_b
+
+Ping2CC69_b:
+PULSOUT 14, 5	'send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' recieve pulse duration on Pin 14
+IF time2 < 00053 OR time2 > 02688 THEN Ping1_b1 'constrain output to (0-127)
+
+GOSUB Ping2_conversion
+'	mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters	
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 'scale distance to midi range
+'	midivalue2 = mmdistance2 'give value to variable
+
+SEROUT MidiOut, MidiBaud, [midichannel, 69, midivalue2]
+
+GOSUB Ping1_b1
+
+Ping2PitchBend_b:
+PULSOUT 14, 5	'send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' recieve pulse duration on Pin 14
+IF time2 < 00077 OR time2 > 01594 THEN Ping1_b1 'constrain output to (0-127)		
+
+GOSUB Ping2_conversion
+'	mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 
+'	midivalue2 = mmdistance2
+
+	
+IF midivalue2 < 127 THEN midiLSB = 0
+IF midivalue2 = 127 THEN midiLSB = 127
+
+SEROUT MidiOut, MidiBaud, [227, midiLSB, midivalue2]
+
+GOSUB Ping1_b1
+
+Ping1_b1:
+PULSOUT 15, 5	'send pulse out Pin 15, for 10 us
+PULSIN 15, 1, time	' recieve pulse duration on Pin 15
+IF time < 00085 OR time > 01574 THEN Ping1_B 'prevent out of range values
+		
+	mmdistance = mmconstant ** time ' convert time data to distance in millimeters
+	mmdistance = mmdistance  - 1 ** scalefactorB - 2 
+	midivalue = mmdistance + 24 ' add 24 to set midi range to 24-60
+
+GOSUB Get_Velocity
+
+GOSUB Scan_Change
+'IF lastnote <> midivalue THEN 
+'	SEROUT MidiOut, MidiBaud, [$93, midivalue, velocity]
+'ENDIF
+'IF lastnote <> midivalue THEN
+'	SEROUT MidiOut, MidiBaud, [$83, lastnote, 0]
+'ENDIF
+'lastnote = midivalue
+
+
+
+
+
+HIGH 3
+PAUSE 6
+RCTIME 3, 1, timeB
+IF timeB = 1 THEN 
+	GOSUB Ping1_B
+ELSE
+	HIGH 1
+	PAUSE 6
+	RCTIME 1, 1, timeA
+	IF timeA = 1 THEN 
+		GOSUB Ping1_A
+	ELSE 
+		GOSUB Ping1_C
+	ENDIF
+ENDIF
+'---Ping function subroutine C----------------
+Ping1_C:
+
+IF IN0 = 1 THEN Ping2selectC
+IF IN0 = 0 THEN Ping1_c1
+
+Ping2selectC:
+IF IN12 = 0 THEN Ping2CC69_c
+IF IN12 = 1 THEN Ping2PitchBend_c
+
+
+Ping2CC69_c:  
+PULSOUT 14, 5	'send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' recieve pulse duration on Pin 14
+IF time2 < 00053 OR time2 > 02688 THEN Ping1_c1'constrain output to (0-127)
+		
+GOSUB Ping2_conversion
+'	mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 
+'	midivalue2 = mmdistance2
+
+
+SEROUT MidiOut, MidiBaud, [midichannel, 69, midivalue2]
+
+
+GOSUB Ping1_c1 
+
+Ping2PitchBend_c:
+
+PULSOUT 14, 5	'send pulse out Pin 14, for 10 us
+PULSIN 14, 1, time2	' recieve pulse duration on Pin 14
+IF time2 < 00077 OR time2 > 01594 THEN Ping1_c1 'constrain output to (0-127)		
+
+GOSUB Ping2_conversion
+'	mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters	
+'	mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 
+'	midivalue2 = mmdistance2
+
+IF midivalue2 < 127 THEN midiLSB = 0
+IF midivalue2 = 127 THEN midiLSB = 127
+	
+SEROUT MidiOut, MidiBaud, [227, midiLSB, midivalue2]
+
+GOSUB Ping1_c1
+
+Ping1_c1:
+PULSOUT 15, 5	'send pulse out Pin 15, for 5 us
+PULSIN 15, 1, time	' recieve pulse duration on Pin 15
+IF time < 00053 OR time > 02688 THEN Ping1_C 'constrain output to (0-127)		
+
+	mmdistance = mmconstant ** time 'convert time data to distance in millimeters	
+	mmdistance = mmdistance  + 20 ** scalefactorC - 12 
+	midivalue = mmdistance
+
+
+
+SEROUT MidiOut, MidiBaud, [midichannel, 68, midivalue]
+
+
+
+HIGH 5
+PAUSE 6
+RCTIME 5, 1, timeC
+IF timeC = 1 THEN
+	GOSUB Ping1_C
+ELSE
+	HIGH 1
+	PAUSE 6
+	RCTIME 1, 1, timeA
+	IF timeA = 1 THEN 
+		GOSUB Ping1_A
+	ELSE
+		GOSUB Ping1_B
+	ENDIF
+ENDIF
+
+
+
+'---Ping2 conversion-----
+Ping2_conversion:
+mmdistance2 = mmconstant ** time2 'convert time data to distance in millimeters
+mmdistance2 = mmdistance2  + 20 ** scalefactorC - 12 'scale distance to midi range
+midivalue2 = mmdistance2 'give variable value
+RETURN
+
+'---check for midi note change---
+Scan_Change:
+IF lastnote <> midivalue THEN 'check for change in midi value
+	SEROUT MidiOut, MidiBaud, [$93, midivalue, velocity] 'send note on message
+ENDIF
+IF lastnote <> midivalue THEN
+	SEROUT MidiOut, MidiBaud, [$83, lastnote, 0] 'send note off message
+ENDIF
+lastnote = midivalue
+RETURN
+
+'---get Velocity---
+Get_Velocity:
+
+LOW CLK
+LOW CS
+PULSOUT CLK, 210
+SHIFTIN DataOutput,CLK,MSBPOST,[adcBits\8]
+HIGH CS
+velocity = adcBits / 2 
+RETURN
+
+
+
+	
